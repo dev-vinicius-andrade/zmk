@@ -95,6 +95,15 @@ config BT_MAX_CONN
 config BT_GAP_AUTO_UPDATE_CONN_PARAMS
     default n
 
+
+# centrals
+config ZMK_MAX_KNOWN_CENTRALS
+    int "Maximum number of known bonded centrals"
+    default 5
+    help
+      Determines how many central (dongle) MAC addresses should be remembered
+      and cycled through for reconnection.
+      
 endif # !ZMK_SPLIT_ROLE_CENTRAL
 
 endmenu
