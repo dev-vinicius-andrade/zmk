@@ -674,12 +674,6 @@ config ZMK_KEYMAP_SENSORS
     depends on DT_HAS_ZMK_KEYMAP_SENSORS_ENABLED
     select SENSOR
 
-config ZMK_MAX_KNOWN_CENTRALS
-    int "Maximum number of previously paired centrals to remember"
-    default 3
-    help
-      Number of known central devices to reconnect to before falling back to open advertising.
-      
 if ZMK_KEYMAP_SENSORS
 
 config ZMK_KEYMAP_SENSORS_DEFAULT_TRIGGERS_PER_ROTATION

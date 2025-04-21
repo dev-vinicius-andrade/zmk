@@ -1,6 +1,5 @@
 # Copyright (c) 2024 The ZMK Contributors
 # SPDX-License-Identifier: MIT
-CONFIG_CONFIG_ZMK_MAX_KNOWN_CENTRALS=5
 rsource "bluetooth/Kconfig.defaults"
 rsource "wired/Kconfig.defaults"
 
