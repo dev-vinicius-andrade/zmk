@@ -1,137 +1,110 @@
-/*
- * Copyright (c) 2025 The ZMK Contributors
- *
- * SPDX-License-Identifier: MIT
- */
-
-#include <errno.h>
-
-#include <zmk/stdlib.h>
-#include <zmk/split/transport/peripheral.h>
-
-#include <drivers/behavior.h>
-#include <zmk/behavior.h>
-
-#include <zmk/event_manager.h>
-#include <zmk/events/position_state_changed.h>
-#include <zmk/events/sensor_event.h>
-#include <zmk/events/battery_state_changed.h>
-
+#include <zephyr/device.h>
 #include <zephyr/init.h>
+#include <zephyr/settings/settings.h>
+#include <zephyr/bluetooth/bluetooth.h>
+#include <zephyr/bluetooth/conn.h>
+#include <zephyr/bluetooth/hci.h>
 #include <zephyr/logging/log.h>
 
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
-// TODO: Active transport selection
-
-struct zmk_split_transport_peripheral *active_transport;
-
-int zmk_split_transport_peripheral_command_handler(
-    const struct zmk_split_transport_peripheral *transport,
-    struct zmk_split_transport_central_command cmd) {
-    LOG_DBG("");
-
-    switch (cmd.type) {
-    case ZMK_SPLIT_TRANSPORT_CENTRAL_CMD_TYPE_INVOKE_BEHAVIOR: {
-        struct zmk_behavior_binding binding = {
-            .param1 = cmd.data.invoke_behavior.param1,
-            .param2 = cmd.data.invoke_behavior.param2,
-            .behavior_dev = cmd.data.invoke_behavior.behavior_dev,
-        };
-        LOG_DBG("%s with params %d %d: pressed? %d", binding.behavior_dev, binding.param1,
-                binding.param2, cmd.data.invoke_behavior.state);
-        struct zmk_behavior_binding_event event = {.position = cmd.data.invoke_behavior.position,
-                                                   .timestamp = k_uptime_get()};
-        int err;
-        if (cmd.data.invoke_behavior.state > 0) {
-            err = behavior_keymap_binding_pressed(&binding, event);
-        } else {
-            err = behavior_keymap_binding_released(&binding, event);
-        }
-
-        if (err) {
-            LOG_ERR("Failed to invoke behavior %s: %d", binding.behavior_dev, err);
-        }
-    }
-    default:
-        LOG_WRN("Unhandled command type %d", cmd.type);
-        return -ENOTSUP;
-    }
-    return 0;
-}
-
-int zmk_split_peripheral_report_event(const struct zmk_split_transport_peripheral_event *event) {
-    if (!active_transport || !active_transport->api || !active_transport->api->report_event) {
-        LOG_WRN("No active transport that supports reporting events!");
-        return -ENODEV;
-    }
-
-    return active_transport->api->report_event(event);
-}
-
-static int peripheral_init(void) {
-    STRUCT_SECTION_GET(zmk_split_transport_peripheral, 0, &active_transport);
-
-    return 0;
-}
-
-SYS_INIT(peripheral_init, APPLICATION, CONFIG_KERNEL_INIT_PRIORITY_DEFAULT);
-
-int split_peripheral_listener(const zmk_event_t *eh) {
-    LOG_DBG("");
-    const struct zmk_position_state_changed *pos_ev;
-    if ((pos_ev = as_zmk_position_state_changed(eh)) != NULL) {
-        struct zmk_split_transport_peripheral_event ev = {
-            .type = ZMK_SPLIT_TRANSPORT_PERIPHERAL_EVENT_TYPE_KEY_POSITION_EVENT,
-            .data = {.key_position_event = {
-                         .position = pos_ev->position,
-                         .pressed = pos_ev->state,
-                     }}};
-
-        zmk_split_peripheral_report_event(&ev);
-    }
-
-#if ZMK_KEYMAP_HAS_SENSORS
-    const struct zmk_sensor_event *sensor_ev;
-    if ((sensor_ev = as_zmk_sensor_event(eh)) != NULL) {
-        if (sensor_ev->channel_data_size != 1) {
-            return -ENOTSUP;
-        }
-
-        struct zmk_split_transport_peripheral_event ev = {
-            .type = ZMK_SPLIT_TRANSPORT_PERIPHERAL_EVENT_TYPE_SENSOR_EVENT,
-            .data = {.sensor_event = {
-                         .channel_data = sensor_ev->channel_data[0],
-                         .sensor_index = sensor_ev->sensor_index,
-                     }}};
-
-        zmk_split_peripheral_report_event(&ev);
-    }
-#endif /* ZMK_KEYMAP_HAS_SENSORS */
-
-#if IS_ENABLED(CONFIG_ZMK_BATTERY_REPORTING)
-    const struct zmk_battery_state_changed *battery_ev;
-    if ((battery_ev = as_zmk_battery_state_changed(eh)) != NULL) {
-        struct zmk_split_transport_peripheral_event ev = {
-            .type = ZMK_SPLIT_TRANSPORT_PERIPHERAL_EVENT_TYPE_BATTERY_EVENT,
-            .data = {.battery_event = {
-                         .level = battery_ev->state_of_charge,
-                     }}};
-
-        zmk_split_peripheral_report_event(&ev);
-    }
-#endif // IS_ENABLED(CONFIG_ZMK_BATTERY_REPORTING)
-
-    return ZMK_EV_EVENT_BUBBLE;
-}
-
-ZMK_LISTENER(split_peripheral, split_peripheral_listener);
-ZMK_SUBSCRIPTION(split_peripheral, zmk_position_state_changed);
-
-#if ZMK_KEYMAP_HAS_SENSORS
-ZMK_SUBSCRIPTION(split_peripheral, zmk_sensor_event);
-#endif /* ZMK_KEYMAP_HAS_SENSORS */
-
-#if IS_ENABLED(CONFIG_ZMK_BATTERY_REPORTING)
-ZMK_SUBSCRIPTION(split_peripheral, zmk_battery_state_changed);
+#ifndef CONFIG_ZMK_MAX_KNOWN_CENTRALS
+#define CONFIG_ZMK_MAX_KNOWN_CENTRALS 3
 #endif
+
+#define MAX_KNOWN_CENTRALS CONFIG_ZMK_MAX_KNOWN_CENTRALS
+
+static bt_addr_le_t known_centrals[MAX_KNOWN_CENTRALS];
+static int known_central_count = 0;
+
+static bool is_connected = false;
+static bool is_bonded = false;
+
+static int save_known_centrals() {
+    return settings_save_one("ble_peripheral/known_centrals", known_centrals,
+                             sizeof(known_centrals));
+}
+
+static void forget_oldest_central() {
+    if (known_central_count == 0)
+        return;
+    for (int i = 1; i < known_central_count; i++) {
+        known_centrals[i - 1] = known_centrals[i];
+    }
+    known_central_count--;
+}
+
+static void add_known_central(const bt_addr_le_t *addr) {
+    for (int i = 0; i < known_central_count; i++) {
+        if (!bt_addr_le_cmp(&known_centrals[i], addr))
+            return; // Already known
+    }
+    if (known_central_count >= MAX_KNOWN_CENTRALS) {
+        forget_oldest_central();
+    }
+    bt_addr_le_copy(&known_centrals[known_central_count++], addr);
+    save_known_centrals();
+}
+
+static int start_advertising(bool low_duty) {
+    for (int i = 0; i < known_central_count; ++i) {
+        struct bt_le_adv_param adv_param = low_duty
+                                               ? *BT_LE_ADV_CONN_DIR_LOW_DUTY(&known_centrals[i])
+                                               : *BT_LE_ADV_CONN_DIR(&known_centrals[i]);
+
+        int err = bt_le_adv_start(&adv_param, NULL, 0, NULL, 0);
+        if (err == 0) {
+            LOG_INF("Advertising to known central %d", i);
+            return 0; // Started directed advertising
+        }
+    }
+    LOG_INF("Fallback to open advertising");
+    return bt_le_adv_start(BT_LE_ADV_CONN, NULL, 0, NULL, 0); // Fallback
+}
+
+static void connected(struct bt_conn *conn, uint8_t err) {
+    is_connected = (err == 0);
+    if (!err) {
+        add_known_central(bt_conn_get_dst(conn));
+    }
+}
+
+static void disconnected(struct bt_conn *conn, uint8_t reason) {
+    is_connected = false;
+    start_advertising(false);
+}
+
+static void auth_pairing_complete(struct bt_conn *conn, bool bonded) {
+    is_bonded = bonded;
+    if (bonded) {
+        add_known_central(bt_conn_get_dst(conn));
+    }
+}
+
+static int peripheral_ble_handle_set(const char *name, size_t len, settings_read_cb read_cb,
+                                     void *cb_arg) {
+    if (strcmp(name, "known_centrals") == 0) {
+        ssize_t read = read_cb(cb_arg, known_centrals, sizeof(known_centrals));
+        if (read > 0) {
+            known_central_count = read / sizeof(bt_addr_le_t);
+        }
+    }
+    return 0;
+}
+
+static struct settings_handler ble_peripheral_settings_handler = {
+    .name = "ble_peripheral",
+    .h_set = peripheral_ble_handle_set,
+};
+
+static int zmk_peripheral_ble_init(void) {
+    int err = bt_enable(NULL);
+    if (err)
+        return err;
+
+    settings_register(&ble_peripheral_settings_handler);
+    start_advertising(false);
+    return 0;
+}
+
+SYS_INIT(zmk_peripheral_ble_init, APPLICATION, CONFIG_ZMK_BLE_INIT_PRIORITY);

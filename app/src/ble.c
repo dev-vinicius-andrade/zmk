@@ -3,7 +3,7 @@
  *
  * SPDX-License-Identifier: MIT
  */
-#include <zephyr/random/random.h>
+
 #include <zephyr/device.h>
 #include <zephyr/init.h>
 
@@ -21,11 +21,6 @@
 #include <zephyr/bluetooth/gatt.h>
 #include <zephyr/bluetooth/hci_types.h>
 
-#ifndef ZMK_STATIC_MAC_ADDRESS
-#define ZMK_STATIC_MAC_ADDRESS ""
-#endif
-
-#define STATIC_MAC_ADDRESS ZMK_STATIC_MAC_ADDRESS
 #if IS_ENABLED(CONFIG_SETTINGS)
 
 #include <zephyr/settings/settings.h>
@@ -715,46 +710,8 @@ static int zmk_ble_complete_startup(void) {
 
     return 0;
 }
-static void generate_static_random_mac(uint8_t *mac) {
-    sys_rand_get(mac, 6);
-    mac[0] |= 0xC0; // Make it a static random MAC (110xxxxx)
-}
 
-static bool parse_mac(const char *mac_str, uint8_t *mac_out) {
-    int values[6];
-    if (sscanf(mac_str, "%x:%x:%x:%x:%x:%x", &values[0], &values[1], &values[2], &values[3],
-               &values[4], &values[5]) == 6) {
-        for (int i = 0; i < 6; ++i) {
-            mac_out[5 - i] = (uint8_t)values[i]; // Reverse order for little-endian
-        }
-        return true;
-    }
-    return false;
-}
 static int zmk_ble_init(void) {
-    uint8_t mac_bytes[6];
-    bt_addr_le_t static_mac = {.type = BT_ADDR_LE_RANDOM};
-
-#if defined(STATIC_MAC_ADDRESS)
-    if (strlen(STATIC_MAC_ADDRESS) > 0) {
-        if (parse_mac(STATIC_MAC_ADDRESS, mac_bytes)) {
-            LOG_INF("Using static MAC from config: %s", STATIC_MAC_ADDRESS);
-        } else {
-            LOG_WRN("Invalid MAC format, generating random static MAC.");
-            generate_static_random_mac(mac_bytes);
-        }
-    } else {
-        LOG_INF("No MAC configured, generating static random MAC.");
-        generate_static_random_mac(mac_bytes);
-    }
-#else
-    LOG_INF("No MAC configured, generating static random MAC.");
-    generate_static_random_mac(mac_bytes);
-#endif
-
-    memcpy(static_mac.a.val, mac_bytes, 6);
-    bt_id_create(&static_mac, NULL);
-
     int err = bt_enable(NULL);
 
     if (err < 0 && err != -EALREADY) {
