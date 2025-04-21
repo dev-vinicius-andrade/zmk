@@ -24,6 +24,11 @@ static int known_central_count = 0;
 static bool is_connected = false;
 static bool is_bonded = false;
 
+static const struct bt_data zmk_ble_ad[] = {
+    BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
+    BT_DATA_BYTES(BT_DATA_UUID16_SOME, 0x0f, 0x18) // Battery Service
+};
+
 static int save_known_centrals() {
     return settings_save_one("ble_peripheral/known_centrals", known_centrals,
                              sizeof(known_centrals));
@@ -52,16 +57,25 @@ static void add_known_central(const bt_addr_le_t *addr) {
 
 static int start_advertising(bool low_duty) {
     for (int i = 0; i < known_central_count; ++i) {
+        char addr_str[BT_ADDR_LE_STR_LEN];
+        bt_addr_le_to_str(&known_centrals[i], addr_str, sizeof(addr_str));
+        LOG_INF("Trying directed advertising to: %s", addr_str);
+
         struct bt_le_adv_param adv_param = low_duty
                                                ? *BT_LE_ADV_CONN_DIR_LOW_DUTY(&known_centrals[i])
                                                : *BT_LE_ADV_CONN_DIR(&known_centrals[i]);
 
         int err = bt_le_adv_start(&adv_param, NULL, 0, NULL, 0);
         if (err == 0) {
-            return 0; // Started directed advertising
+            LOG_INF("Directed advertising started successfully");
+            return 0;
+        } else {
+            LOG_ERR("Directed advertising failed to %s (err %d)", addr_str, err);
         }
     }
-    return bt_le_adv_start(BT_LE_ADV_CONN, NULL, 0, NULL, 0); // Fallback
+
+    LOG_WRN("Falling back to general advertising");
+    return bt_le_adv_start(BT_LE_ADV_CONN, zmk_ble_ad, ARRAY_SIZE(zmk_ble_ad), NULL, 0);
 }
 
 static void connected(struct bt_conn *conn, uint8_t err) {
