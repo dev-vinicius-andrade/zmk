@@ -5,6 +5,13 @@ mainmenu "ZMK Firmware"
 
 menu "ZMK"
 
+config ZMK_STATIC_MAC_ADDRESS
+    string "Static MAC address"
+    default ""
+    help
+      Optional static random Bluetooth MAC address in the format C0:FF:EE:C0:DE:01.
+      If set, the central or peripheral will use this instead of the default MAC.
+      
 menu "Basic Keyboard Setup"
 
 config ZMK_KEYBOARD_NAME
