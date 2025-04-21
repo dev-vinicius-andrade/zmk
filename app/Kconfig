@@ -4,7 +4,7 @@
 mainmenu "ZMK Firmware"
 
 menu "ZMK"
-      
+
 menu "Basic Keyboard Setup"
 
 config ZMK_KEYBOARD_NAME
@@ -444,13 +444,13 @@ config ZMK_COMBO_MAX_PRESSED_COMBOS
     default 4
 
 config ZMK_COMBO_MAX_COMBOS_PER_KEY
-    int
+    int "Deprecated: Max combos per key"
     default 0
     help
       Deprecated: Storage for combos is now determined automatically
 
 config ZMK_COMBO_MAX_KEYS_PER_COMBO
-    int
+    int "Deprecated: Max keys per combo"
     default 0
     help
        Deprecated: This is now auto-calculated based on `key-positions` in devicetree
@@ -652,7 +652,7 @@ endif # ZMK_LOW_PRIORITY_WORK_QUEUE
 endmenu # Advanced
 
 endmenu # ZMK
-      
+
 config KERNEL_BIN_NAME
     default "zmk"
 
