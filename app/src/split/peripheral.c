@@ -102,7 +102,12 @@ static int zmk_peripheral_ble_init(void) {
     if (err)
         return err;
 
+    bt_conn_cb_register(&conn_callbacks);
+    bt_conn_auth_cb_register(&auth_cb_display);
+
     settings_register(&ble_peripheral_settings_handler);
+    settings_load(); // Load known centrals
+
     start_advertising(false);
     return 0;
 }
