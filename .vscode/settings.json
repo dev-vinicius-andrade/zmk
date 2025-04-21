@@ -1,7 +1,15 @@
 {
   "files.associations": {
+    "*.page-template": "vue",
+    "*.layout-template": "vue",
+    "*.vue": "vue",
+    "*.code-workspace": "jsonc",
+    ".env*": "dotenv",
+    "*.ts": "typescript",
+    "*.css": "tailwindcss",
     "*.overlay": "dts",
-    "*.keymap": "dts"
+    "*.keymap": "dts",
+    "stdlib.h": "c"
   },
   "python.analysis.include": ["app/scripts", "zephyr/scripts"],
   "[c]": {
