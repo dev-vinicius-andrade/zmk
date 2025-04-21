@@ -730,11 +730,16 @@ static int zmk_ble_init(void) {
     uint8_t mac_bytes[6];
     bt_addr_le_t static_mac = {.type = BT_ADDR_LE_RANDOM};
 
-#if defined(CONFIG_ZMK_STATIC_MAC_ADDRESS) && (sizeof(CONFIG_ZMK_STATIC_MAC_ADDRESS) > 1)
-    if (parse_mac(CONFIG_ZMK_STATIC_MAC_ADDRESS, mac_bytes)) {
-        LOG_INF("Using static MAC from config: %s", CONFIG_ZMK_STATIC_MAC_ADDRESS);
+#if defined(CONFIG_ZMK_STATIC_MAC_ADDRESS)
+    if (strlen(CONFIG_ZMK_STATIC_MAC_ADDRESS) > 0) {
+        if (parse_mac(CONFIG_ZMK_STATIC_MAC_ADDRESS, mac_bytes)) {
+            LOG_INF("Using static MAC from config: %s", CONFIG_ZMK_STATIC_MAC_ADDRESS);
+        } else {
+            LOG_WRN("Invalid MAC format, generating random static MAC.");
+            generate_static_random_mac(mac_bytes);
+        }
     } else {
-        LOG_WRN("Invalid MAC format, generating random static MAC.");
+        LOG_INF("No MAC configured, generating static random MAC.");
         generate_static_random_mac(mac_bytes);
     }
 #else
