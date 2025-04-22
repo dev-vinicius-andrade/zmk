@@ -712,6 +712,26 @@ static int zmk_ble_complete_startup(void) {
 }
 
 static int zmk_ble_init(void) {
+#if defined(CONFIG_ZMK_STATIC_MAC_ADDRESS) && (sizeof(CONFIG_ZMK_STATIC_MAC_ADDRESS) > 1)
+    {
+        uint8_t mac_bytes[6];
+        if (sscanf(CONFIG_ZMK_STATIC_MAC_ADDRESS, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx", &mac_bytes[5],
+                   &mac_bytes[4], &mac_bytes[3], &mac_bytes[2], &mac_bytes[1],
+                   &mac_bytes[0]) == 6) {
+            LOG_INF("Using static MAC from config: %s", CONFIG_ZMK_STATIC_MAC_ADDRESS);
+
+            bt_addr_le_t addr = {.type = BT_ADDR_LE_RANDOM};
+            memcpy(addr.a.val, mac_bytes, sizeof(mac_bytes));
+
+            int id_err = bt_id_create(&addr, NULL);
+            if (id_err < 0) {
+                LOG_ERR("Failed to create BT ID with static MAC. err=%d", id_err);
+            }
+        } else {
+            LOG_WRN("Invalid MAC format in CONFIG_ZMK_STATIC_MAC_ADDRESS");
+        }
+    }
+#endif
     int err = bt_enable(NULL);
 
     if (err < 0 && err != -EALREADY) {
