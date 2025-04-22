@@ -7,168 +7,131 @@
 #include <errno.h>
 
 #include <zmk/stdlib.h>
-#include <zmk/split/transport/central.h>
-#include <zmk/split/central.h>
-#include <zmk/hid_indicators_types.h>
-#include <zmk/pointing/input_split.h>
+#include <zmk/split/transport/peripheral.h>
 
-#include <zephyr/logging/log.h>
+#include <drivers/behavior.h>
+#include <zmk/behavior.h>
 
 #include <zmk/event_manager.h>
-#include <zmk/events/battery_state_changed.h>
 #include <zmk/events/position_state_changed.h>
 #include <zmk/events/sensor_event.h>
+#include <zmk/events/battery_state_changed.h>
+
+#include <zephyr/init.h>
+#include <zephyr/logging/log.h>
 
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 // TODO: Active transport selection
 
-struct zmk_split_transport_central *active_transport;
+struct zmk_split_transport_peripheral *active_transport;
 
-#if IS_ENABLED(CONFIG_ZMK_SPLIT_BLE_CENTRAL_BATTERY_LEVEL_FETCHING)
+int zmk_split_transport_peripheral_command_handler(
+    const struct zmk_split_transport_peripheral *transport,
+    struct zmk_split_transport_central_command cmd) {
+    LOG_DBG("");
 
-static uint8_t peripheral_battery_levels[ZMK_SPLIT_CENTRAL_PERIPHERAL_COUNT] = {0};
-
-#endif // IS_ENABLED(CONFIG_ZMK_SPLIT_BLE_CENTRAL_BATTERY_LEVEL_FETCHING)
-
-int zmk_split_transport_central_peripheral_event_handler(
-    const struct zmk_split_transport_central *transport, uint8_t source,
-    struct zmk_split_transport_peripheral_event ev) {
-    if (transport != active_transport) {
-        // Ignoring events from non-active transport
-        LOG_WRN("Ignoring peripheral event from non-active transport");
-        return -EINVAL;
-    }
-    switch (ev.type) {
-    case ZMK_SPLIT_TRANSPORT_PERIPHERAL_EVENT_TYPE_KEY_POSITION_EVENT: {
-        struct zmk_position_state_changed state_ev = {.source = source,
-                                                      .position =
-                                                          ev.data.key_position_event.position,
-                                                      .state = ev.data.key_position_event.pressed,
-                                                      .timestamp = k_uptime_get()};
-        return raise_zmk_position_state_changed(state_ev);
-    }
-#if IS_ENABLED(CONFIG_ZMK_INPUT_SPLIT)
-    case ZMK_SPLIT_TRANSPORT_PERIPHERAL_EVENT_TYPE_INPUT_EVENT: {
-        return zmk_input_split_report_peripheral_event(
-            ev.data.input_event.reg, ev.data.input_event.type, ev.data.input_event.code,
-            ev.data.input_event.value, ev.data.input_event.sync);
-    }
-#endif // IS_ENABLED(CONFIG_ZMK_POINTING)
-#if IS_ENABLED(CONFIG_ZMK_SPLIT_BLE_CENTRAL_BATTERY_LEVEL_FETCHING)
-    case ZMK_SPLIT_TRANSPORT_PERIPHERAL_EVENT_TYPE_BATTERY_EVENT: {
-        struct zmk_peripheral_battery_state_changed battery_ev = {
-            .source = source,
-            .state_of_charge = ev.data.battery_event.level,
+    switch (cmd.type) {
+    case ZMK_SPLIT_TRANSPORT_CENTRAL_CMD_TYPE_INVOKE_BEHAVIOR: {
+        struct zmk_behavior_binding binding = {
+            .param1 = cmd.data.invoke_behavior.param1,
+            .param2 = cmd.data.invoke_behavior.param2,
+            .behavior_dev = cmd.data.invoke_behavior.behavior_dev,
         };
-        peripheral_battery_levels[source] = ev.data.battery_event.level;
-        return raise_zmk_peripheral_battery_state_changed(battery_ev);
-    }
-#endif
-    case ZMK_SPLIT_TRANSPORT_PERIPHERAL_EVENT_TYPE_SENSOR_EVENT: {
-        struct zmk_sensor_event sensor_ev = {.sensor_index = ev.data.sensor_event.sensor_index,
-                                             .channel_data_size = 1,
-                                             .timestamp = k_uptime_get()};
+        LOG_DBG("%s with params %d %d: pressed? %d", binding.behavior_dev, binding.param1,
+                binding.param2, cmd.data.invoke_behavior.state);
+        struct zmk_behavior_binding_event event = {.position = cmd.data.invoke_behavior.position,
+                                                   .timestamp = k_uptime_get()};
+        int err;
+        if (cmd.data.invoke_behavior.state > 0) {
+            err = behavior_keymap_binding_pressed(&binding, event);
+        } else {
+            err = behavior_keymap_binding_released(&binding, event);
+        }
 
-        sensor_ev.channel_data[0] = ev.data.sensor_event.channel_data;
-
-        return raise_zmk_sensor_event(sensor_ev);
-    }
-    default:
-        LOG_WRN("GOT AN UNKNOWN EVENT TYPE %d", ev.type);
-        return -ENOTSUP;
-    }
-}
-
-int zmk_split_central_invoke_behavior(uint8_t source, struct zmk_behavior_binding *binding,
-                                      struct zmk_behavior_binding_event event, bool state) {
-    if (!active_transport || !active_transport->api || !active_transport->api->send_command) {
-        return -ENODEV;
-    }
-
-    struct zmk_split_transport_central_command command =
-        (struct zmk_split_transport_central_command){
-            .type = ZMK_SPLIT_TRANSPORT_CENTRAL_CMD_TYPE_INVOKE_BEHAVIOR,
-            .data =
-                {
-                    .invoke_behavior =
-                        {
-                            .param1 = binding->param1,
-                            .param2 = binding->param2,
-                            .position = event.position,
-                            .event_source = event.source,
-                            .state = state ? 1 : 0,
-                        },
-                },
-        };
-
-    const size_t payload_dev_size = sizeof(command.data.invoke_behavior.behavior_dev);
-    if (strlcpy(command.data.invoke_behavior.behavior_dev, binding->behavior_dev,
-                payload_dev_size) >= payload_dev_size) {
-        LOG_ERR("Truncated behavior label %s to %s before invoking peripheral behavior",
-                binding->behavior_dev, command.data.invoke_behavior.behavior_dev);
-    }
-
-    return active_transport->api->send_command(source, command);
-};
-
-#if IS_ENABLED(CONFIG_ZMK_SPLIT_PERIPHERAL_HID_INDICATORS)
-
-int zmk_split_central_update_hid_indicator(zmk_hid_indicators_t indicators) {
-    if (!active_transport || !active_transport->api ||
-        !active_transport->api->get_available_source_ids || !active_transport->api->send_command) {
-        return -ENODEV;
-    }
-
-    uint8_t source_ids[ZMK_SPLIT_CENTRAL_PERIPHERAL_COUNT];
-
-    int ret = active_transport->api->get_available_source_ids(source_ids);
-
-    if (ret < 0) {
-        return ret;
-    }
-
-    struct zmk_split_transport_central_command command =
-        (struct zmk_split_transport_central_command){
-            .type = ZMK_SPLIT_TRANSPORT_CENTRAL_CMD_TYPE_SET_HID_INDICATORS,
-            .data =
-                {
-                    .set_hid_indicators =
-                        {
-                            .indicators = indicators,
-                        },
-                },
-        };
-
-    for (size_t i = 0; i < ret; i++) {
-        ret = active_transport->api->send_command(source_ids[i], command);
-        if (ret < 0) {
-            return ret;
+        if (err) {
+            LOG_ERR("Failed to invoke behavior %s: %d", binding.behavior_dev, err);
         }
     }
-
+    default:
+        LOG_WRN("Unhandled command type %d", cmd.type);
+        return -ENOTSUP;
+    }
     return 0;
 }
 
-#endif // IS_ENABLED(CONFIG_ZMK_SPLIT_PERIPHERAL_HID_INDICATORS)
-
-#if IS_ENABLED(CONFIG_ZMK_SPLIT_BLE_CENTRAL_BATTERY_LEVEL_FETCHING)
-
-int zmk_split_central_get_peripheral_battery_level(uint8_t source, uint8_t *level) {
-    if (source >= ARRAY_SIZE(peripheral_battery_levels)) {
-        return -EINVAL;
+int zmk_split_peripheral_report_event(const struct zmk_split_transport_peripheral_event *event) {
+    if (!active_transport || !active_transport->api || !active_transport->api->report_event) {
+        LOG_WRN("No active transport that supports reporting events!");
+        return -ENODEV;
     }
 
-    *level = peripheral_battery_levels[source];
+    return active_transport->api->report_event(event);
+}
+
+static int peripheral_init(void) {
+    STRUCT_SECTION_GET(zmk_split_transport_peripheral, 0, &active_transport);
+
     return 0;
 }
 
-#endif // IS_ENABLED(CONFIG_ZMK_SPLIT_BLE_CENTRAL_BATTERY_LEVEL_FETCHING)
+SYS_INIT(peripheral_init, APPLICATION, CONFIG_KERNEL_INIT_PRIORITY_DEFAULT);
 
-static int central_init(void) {
-    STRUCT_SECTION_GET(zmk_split_transport_central, 0, &active_transport);
+int split_peripheral_listener(const zmk_event_t *eh) {
+    LOG_DBG("");
+    const struct zmk_position_state_changed *pos_ev;
+    if ((pos_ev = as_zmk_position_state_changed(eh)) != NULL) {
+        struct zmk_split_transport_peripheral_event ev = {
+            .type = ZMK_SPLIT_TRANSPORT_PERIPHERAL_EVENT_TYPE_KEY_POSITION_EVENT,
+            .data = {.key_position_event = {
+                         .position = pos_ev->position,
+                         .pressed = pos_ev->state,
+                     }}};
 
-    return 0;
+        zmk_split_peripheral_report_event(&ev);
+    }
+
+#if ZMK_KEYMAP_HAS_SENSORS
+    const struct zmk_sensor_event *sensor_ev;
+    if ((sensor_ev = as_zmk_sensor_event(eh)) != NULL) {
+        if (sensor_ev->channel_data_size != 1) {
+            return -ENOTSUP;
+        }
+
+        struct zmk_split_transport_peripheral_event ev = {
+            .type = ZMK_SPLIT_TRANSPORT_PERIPHERAL_EVENT_TYPE_SENSOR_EVENT,
+            .data = {.sensor_event = {
+                         .channel_data = sensor_ev->channel_data[0],
+                         .sensor_index = sensor_ev->sensor_index,
+                     }}};
+
+        zmk_split_peripheral_report_event(&ev);
+    }
+#endif /* ZMK_KEYMAP_HAS_SENSORS */
+
+#if IS_ENABLED(CONFIG_ZMK_BATTERY_REPORTING)
+    const struct zmk_battery_state_changed *battery_ev;
+    if ((battery_ev = as_zmk_battery_state_changed(eh)) != NULL) {
+        struct zmk_split_transport_peripheral_event ev = {
+            .type = ZMK_SPLIT_TRANSPORT_PERIPHERAL_EVENT_TYPE_BATTERY_EVENT,
+            .data = {.battery_event = {
+                         .level = battery_ev->state_of_charge,
+                     }}};
+
+        zmk_split_peripheral_report_event(&ev);
+    }
+#endif // IS_ENABLED(CONFIG_ZMK_BATTERY_REPORTING)
+
+    return ZMK_EV_EVENT_BUBBLE;
 }
 
-SYS_INIT(central_init, APPLICATION, CONFIG_KERNEL_INIT_PRIORITY_DEFAULT);
+ZMK_LISTENER(split_peripheral, split_peripheral_listener);
+ZMK_SUBSCRIPTION(split_peripheral, zmk_position_state_changed);
+
+#if ZMK_KEYMAP_HAS_SENSORS
+ZMK_SUBSCRIPTION(split_peripheral, zmk_sensor_event);
+#endif /* ZMK_KEYMAP_HAS_SENSORS */
+
+#if IS_ENABLED(CONFIG_ZMK_BATTERY_REPORTING)
+ZMK_SUBSCRIPTION(split_peripheral, zmk_battery_state_changed);
+#endif
