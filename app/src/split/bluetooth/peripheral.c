@@ -21,10 +21,13 @@
 #include <zephyr/bluetooth/hci_types.h>
 
 #if IS_ENABLED(CONFIG_SETTINGS)
+
 #include <zephyr/settings/settings.h>
+
 #endif
 
 #include <zephyr/logging/log.h>
+
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 #include <zmk/event_manager.h>
@@ -32,102 +35,84 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include <zmk/ble.h>
 #include <zmk/split/bluetooth/uuid.h>
 
-#define MAX_BONDS CONFIG_ZMK_SPLIT_PERIPHERAL_MAX_BONDS
-#define ADV_ROTATION_INTERVAL CONFIG_ZMK_SPLIT_PERIPHERAL_ADV_ROTATION_INTERVAL
-
-static bt_addr_le_t bonded_centrals[MAX_BONDS];
-static int bond_count = 0;
-static bool is_connected = false;
-static bool is_bonded = false;
-
-static struct bt_conn *active_conn = NULL;
-
-static struct k_work_delayable advertising_work;
-
 static const struct bt_data zmk_ble_ad[] = {
     BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
-    BT_DATA_BYTES(BT_DATA_UUID16_SOME, 0x0f, 0x18),
+    BT_DATA_BYTES(BT_DATA_UUID16_SOME, 0x0f, 0x18 /* Battery Service */
+                  ),
     BT_DATA_BYTES(BT_DATA_UUID128_ALL, ZMK_SPLIT_BT_SERVICE_UUID)};
 
-static void collect_bonded(const struct bt_bond_info *info, void *user_data) {
-    if (bond_count < MAX_BONDS) {
-        bt_addr_le_copy(&bonded_centrals[bond_count], &info->addr);
-        bond_count++;
+static bool is_connected = false;
+
+static bool is_bonded = false;
+
+static void each_bond(const struct bt_bond_info *info, void *user_data) {
+    bt_addr_le_t *addr = (bt_addr_le_t *)user_data;
+
+    if (bt_addr_le_cmp(&info->addr, BT_ADDR_LE_NONE) != 0) {
+        bt_addr_le_copy(addr, &info->addr);
     }
 }
+
+static int start_advertising(bool low_duty) {
+    bt_addr_le_t central_addr = bt_addr_le_none;
+
+    bt_foreach_bond(BT_ID_DEFAULT, each_bond, &central_addr);
+
+    if (bt_addr_le_cmp(&central_addr, BT_ADDR_LE_NONE) != 0) {
+        is_bonded = true;
+        struct bt_le_adv_param adv_param = low_duty ? *BT_LE_ADV_CONN_DIR_LOW_DUTY(&central_addr)
+                                                    : *BT_LE_ADV_CONN_DIR(&central_addr);
+        return bt_le_adv_start(&adv_param, NULL, 0, NULL, 0);
+    } else {
+        is_bonded = false;
+        return bt_le_adv_start(BT_LE_ADV_CONN, zmk_ble_ad, ARRAY_SIZE(zmk_ble_ad), NULL, 0);
+    }
+};
+
+static bool low_duty_advertising = false;
 
 static void advertising_cb(struct k_work *work) {
-    if (is_connected || bond_count == 0)
-        return;
-
-    int err;
-
-    bt_le_adv_stop();
-    bt_le_whitelist_clear();
-
-    for (int i = 0; i < bond_count; i++) {
-        bt_le_whitelist_add(&bonded_centrals[i]);
-        char addr_str[BT_ADDR_LE_STR_LEN];
-        bt_addr_le_to_str(&bonded_centrals[i], addr_str, sizeof(addr_str));
-        LOG_INF("Allowlist includes: %s", addr_str);
-    }
-
-    struct bt_le_adv_param adv_params = {
-        .options = BT_LE_ADV_OPT_CONNECTABLE | BT_LE_ADV_OPT_FILTER_CONN,
-        .interval_min = BT_GAP_ADV_FAST_INT_MIN_2,
-        .interval_max = BT_GAP_ADV_FAST_INT_MAX_2,
-        .id = BT_ID_DEFAULT,
-    };
-
-    err = bt_le_adv_start(&adv_params, zmk_ble_ad, ARRAY_SIZE(zmk_ble_ad), NULL, 0);
-
-    if (err) {
-        LOG_ERR("Failed to start advertising to allowlist (err %d)", err);
-    } else {
-        LOG_INF("Advertising to all bonded centrals using allowlist");
+    const int err = start_advertising(low_duty_advertising);
+    if (err < 0) {
+        LOG_ERR("Failed to start advertising (%d)", err);
     }
 }
 
-K_WORK_DELAYABLE_DEFINE(advertising_work, advertising_cb);
+K_WORK_DEFINE(advertising_work, advertising_cb);
 
 static void connected(struct bt_conn *conn, uint8_t err) {
     is_connected = (err == 0);
-
-    if (is_connected) {
-        active_conn = bt_conn_ref(conn);
-        LOG_INF("Connected and stored active connection");
-    }
 
     raise_zmk_split_peripheral_status_changed(
         (struct zmk_split_peripheral_status_changed){.connected = is_connected});
 
     if (err == BT_HCI_ERR_ADV_TIMEOUT) {
-        k_work_submit(&advertising_work.work);
+        low_duty_advertising = true;
+        k_work_submit(&advertising_work);
     }
 }
 
 static void disconnected(struct bt_conn *conn, uint8_t reason) {
-    is_connected = false;
-
-    if (active_conn) {
-        bt_conn_unref(active_conn);
-        active_conn = NULL;
-        LOG_INF("Connection dropped, cleared active connection");
-    }
-
     char addr[BT_ADDR_LE_STR_LEN];
+
     bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
+
     LOG_DBG("Disconnected from %s (reason 0x%02x)", addr, reason);
+
+    is_connected = false;
 
     raise_zmk_split_peripheral_status_changed(
         (struct zmk_split_peripheral_status_changed){.connected = is_connected});
 
-    k_work_schedule(&advertising_work, K_NO_WAIT);
+    low_duty_advertising = false;
+    k_work_submit(&advertising_work);
 }
 
 static void security_changed(struct bt_conn *conn, bt_security_t level, enum bt_security_err err) {
     char addr[BT_ADDR_LE_STR_LEN];
+
     bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
+
     if (!err) {
         LOG_DBG("Security changed: %s level %u", addr, level);
     } else {
@@ -138,7 +123,9 @@ static void security_changed(struct bt_conn *conn, bt_security_t level, enum bt_
 static void le_param_updated(struct bt_conn *conn, uint16_t interval, uint16_t latency,
                              uint16_t timeout) {
     char addr[BT_ADDR_LE_STR_LEN];
+
     bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
+
     LOG_DBG("%s: interval %d latency %d timeout %d", addr, interval, latency, timeout);
 }
 
@@ -159,31 +146,24 @@ bool zmk_split_bt_peripheral_is_connected(void) { return is_connected; }
 
 bool zmk_split_bt_peripheral_is_bonded(void) { return is_bonded; }
 
-struct bt_conn *zmk_split_bt_peripheral_active_conn(void) { return active_conn; }
-
 static int zmk_peripheral_ble_complete_startup(void) {
 #if IS_ENABLED(CONFIG_ZMK_BLE_CLEAR_BONDS_ON_START)
     LOG_WRN("Clearing all existing BLE bond information from the keyboard");
+
     bt_unpair(BT_ID_DEFAULT, NULL);
 #else
     bt_conn_cb_register(&conn_callbacks);
     bt_conn_auth_info_cb_register(&zmk_peripheral_ble_auth_info_cb);
 
-    bond_count = 0;
-    bt_foreach_bond(BT_ID_DEFAULT, collect_bonded, NULL);
-
-    if (bond_count > 0) {
-        LOG_INF("Found %d bonded centrals, starting filtered advertising", bond_count);
-        k_work_submit(&advertising_work.work);
-    } else {
-        LOG_INF("No bonded centrals found, starting generic advertising");
-        bt_le_adv_start(BT_LE_ADV_CONN, zmk_ble_ad, ARRAY_SIZE(zmk_ble_ad), NULL, 0);
-    }
+    low_duty_advertising = false;
+    k_work_submit(&advertising_work);
 #endif
+
     return 0;
 }
 
 #if IS_ENABLED(CONFIG_SETTINGS)
+
 static int peripheral_ble_handle_set(const char *name, size_t len, settings_read_cb read_cb,
                                      void *cb_arg) {
     return 0;
@@ -193,10 +173,12 @@ static struct settings_handler ble_peripheral_settings_handler = {
     .name = "ble_peripheral",
     .h_set = peripheral_ble_handle_set,
     .h_commit = zmk_peripheral_ble_complete_startup};
-#endif
+
+#endif // IS_ENABLED(CONFIG_SETTINGS)
 
 static int zmk_peripheral_ble_init(void) {
     int err = bt_enable(NULL);
+
     if (err) {
         LOG_ERR("BLUETOOTH FAILED (%d)", err);
         return err;
