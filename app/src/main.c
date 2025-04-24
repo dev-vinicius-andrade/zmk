@@ -19,6 +19,24 @@ LOG_MODULE_REGISTER(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 #endif
 
+static void set_static_mac_if_configured(void) {
+#if defined(CONFIG_ZMK_CENTRAL_STATIC_MAC) && strlen(CONFIG_ZMK_CENTRAL_STATIC_MAC) > 0
+    bt_addr_le_t addr;
+    int err = bt_addr_le_from_str(CONFIG_ZMK_CENTRAL_STATIC_MAC, "public", &addr);
+    if (err) {
+        LOG_ERR("Failed to parse static MAC: %s (err %d)", CONFIG_ZMK_CENTRAL_STATIC_MAC, err);
+        return;
+    }
+
+    err = bt_id_create(&addr, NULL);
+    if (err < 0) {
+        LOG_ERR("Failed to set static MAC address (err %d)", err);
+    } else {
+        LOG_INF("Central MAC address set to %s", CONFIG_ZMK_CENTRAL_STATIC_MAC);
+    }
+#endif
+}
+
 int main(void) {
     LOG_INF("Welcome to ZMK!\n");
 
@@ -26,14 +44,14 @@ int main(void) {
     settings_subsys_init();
     settings_load();
 #endif
-
+    set_static_mac_if_configured();
 #ifdef CONFIG_ZMK_DISPLAY
     zmk_display_init();
-
+    set
 #if IS_ENABLED(CONFIG_ARCH_POSIX)
-    // Workaround for an SDL display issue:
-    // https://github.com/zephyrproject-rtos/zephyr/issues/71410
-    while (1) {
+        // Workaround for an SDL display issue:
+        // https://github.com/zephyrproject-rtos/zephyr/issues/71410
+        while (1) {
         lv_task_handler();
         k_sleep(K_MSEC(10));
     }
