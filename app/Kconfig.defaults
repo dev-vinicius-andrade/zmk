@@ -6,7 +6,8 @@ config ZMK_SPLIT_PERIPHERAL_MAX_BONDS
 
 config ZMK_SPLIT_PERIPHERAL_ADV_ROTATION_INTERVAL
     default 5
-
+config ZMK_CENTRAL_STATIC_MAC
+    default ""
 config SYSTEM_WORKQUEUE_STACK_SIZE
     default 2048 if SOC_RP2040
     default 2048 if ZMK_BLE

@@ -490,6 +490,9 @@ config ZMK_SPLIT_PERIPHERAL_ADV_ROTATION_INTERVAL
     default 5
     help
       Time (in seconds) between rotating directed advertising to known bonded centrals.
+config ZMK_CENTRAL_STATIC_MAC
+    string "Static MAC address for central role (format: C0:FF:EE:00:00:01)"
+    default ""
 endmenu # Multiple Centrals
 
 menu "Initialization Priorities"
