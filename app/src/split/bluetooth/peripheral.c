@@ -57,7 +57,7 @@ static void collect_bonded(const struct bt_bond_info *info, void *user_data) {
 }
 
 static void advertising_cb(struct k_work *work) {
-    if (is_connected || bond_count == 0)
+    if (bond_count == 0)
         return;
 
     int err;
@@ -112,6 +112,7 @@ static void disconnected(struct bt_conn *conn, uint8_t reason) {
     if (active_conn) {
         bt_conn_unref(active_conn);
         active_conn = NULL;
+        bond_count--;
         LOG_INF("Connection dropped, cleared active connection");
     }
 
