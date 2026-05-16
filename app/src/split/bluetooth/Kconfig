@@ -85,8 +85,17 @@ config ZMK_SPLIT_BLE_PERIPHERAL_POSITION_QUEUE_SIZE
     int "Max number of key position state events to queue to send to the central"
     default 10
 
-config BT_MAX_PAIRED
+config ZMK_SPLIT_PERIPHERAL_DONGLE_PROFILES
+    int "Number of dongle profiles the peripheral can store and switch between"
     default 1
+    range 1 5
+    help
+      Number of central (dongle) BLE bond slots the split peripheral supports.
+      Set this to 2 to enable dual-dongle switching via &dongle_select 0 / 1.
+      Each additional profile requires one extra BLE bond storage entry.
+
+config BT_MAX_PAIRED
+    default ZMK_SPLIT_PERIPHERAL_DONGLE_PROFILES
 
 config BT_MAX_CONN
     default 1

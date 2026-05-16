@@ -1,0 +1,8 @@
+# Copyright (c) 2024 The ZMK Contributors
+# SPDX-License-Identifier: MIT
+
+description: Split Peripheral Dongle Slot Selection Behavior
+
+compatible: "zmk,behavior-dongle-select"
+
+include: one_param.yaml

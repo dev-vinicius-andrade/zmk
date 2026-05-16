@@ -1,0 +1,18 @@
+/*
+ * Copyright (c) 2024 The ZMK Contributors
+ *
+ * SPDX-License-Identifier: MIT
+ */
+
+/ {
+    behaviors {
+#if ZMK_BEHAVIOR_OMIT(DONGLE_SELECT)
+        /omit-if-no-ref/
+#endif
+        dongle_select: dongle_select {
+            compatible = "zmk,behavior-dongle-select";
+            #binding-cells = <1>;
+            display-name = "Dongle Select";
+        };
+    };
+};
