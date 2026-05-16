@@ -65,6 +65,43 @@ static bt_addr_le_t dongle_addrs[DONGLE_MAX_PROFILES];
 static uint8_t dongle_count = 0;     /* how many slots have a stored address */
 static uint8_t active_dongle_slot = 0;
 
+struct bond_scan_ctx {
+    bt_addr_le_t *addrs;
+    uint8_t max;
+    uint8_t count;
+};
+
+static void each_bond(const struct bt_bond_info *info, void *user_data) {
+    struct bond_scan_ctx *ctx = (struct bond_scan_ctx *)user_data;
+
+    if (ctx->count >= ctx->max) {
+        return;
+    }
+
+    if (bt_addr_le_cmp(&info->addr, BT_ADDR_LE_NONE) != 0) {
+        bt_addr_le_copy(&ctx->addrs[ctx->count], &info->addr);
+        ctx->count++;
+    }
+}
+
+static void refresh_dongle_slots_from_bonds(void) {
+    struct bond_scan_ctx ctx = {
+        .addrs = dongle_addrs,
+        .max = DONGLE_MAX_PROFILES,
+        .count = 0,
+    };
+
+    memset(dongle_addrs, 0, sizeof(dongle_addrs));
+    bt_foreach_bond(BT_ID_DEFAULT, each_bond, &ctx);
+    dongle_count = ctx.count;
+
+    if (dongle_count == 0) {
+        active_dongle_slot = 0;
+    } else if (active_dongle_slot >= dongle_count) {
+        active_dongle_slot = 0;
+    }
+}
+
 /* -----------------------------------------------------------------------
  * Settings helpers
  * ----------------------------------------------------------------------- */
@@ -91,16 +128,24 @@ static void save_dongle_config(void) {}
 static bool low_duty_advertising = false;
 
 static int start_advertising(bool low_duty) {
+    /* Backward-compatible behavior: for devices with existing bonds and no
+     * stored slot table yet, seed from the BLE bond list. */
+    if (dongle_count == 0) {
+        refresh_dongle_slots_from_bonds();
+    }
+
     /* Use the stored address for the active slot if available. */
     if (active_dongle_slot < dongle_count &&
         bt_addr_le_cmp(&dongle_addrs[active_dongle_slot], BT_ADDR_LE_NONE) != 0) {
         is_bonded = true;
         const bt_addr_le_t *target = &dongle_addrs[active_dongle_slot];
 
-        char addr_str[BT_ADDR_LE_STR_LEN];
-        bt_addr_le_to_str(target, addr_str, sizeof(addr_str));
-        LOG_DBG("Directed advertising to dongle slot %u: %s",
-                active_dongle_slot, addr_str);
+        if (DONGLE_MAX_PROFILES > 1) {
+            char addr_str[BT_ADDR_LE_STR_LEN];
+            bt_addr_le_to_str(target, addr_str, sizeof(addr_str));
+            LOG_DBG("Directed advertising to dongle slot %u: %s",
+                    active_dongle_slot, addr_str);
+        }
 
         struct bt_le_adv_param adv_param =
             low_duty ? *BT_LE_ADV_CONN_DIR_LOW_DUTY(target)
@@ -110,7 +155,9 @@ static int start_advertising(bool low_duty) {
 
     /* No stored address for the active slot — undirected (pairing mode). */
     is_bonded = (dongle_count > 0);
-    LOG_DBG("Undirected advertising (slot %u not yet paired)", active_dongle_slot);
+    if (DONGLE_MAX_PROFILES > 1) {
+        LOG_DBG("Undirected advertising (slot %u not yet paired)", active_dongle_slot);
+    }
     return bt_le_adv_start(BT_LE_ADV_CONN, zmk_ble_ad, ARRAY_SIZE(zmk_ble_ad),
                            NULL, 0);
 }
@@ -215,7 +262,9 @@ static void auth_pairing_complete(struct bt_conn *conn, bool bonded) {
         char addr_str[BT_ADDR_LE_STR_LEN];
         bt_addr_le_to_str(peer, addr_str, sizeof(addr_str));
         bt_addr_le_copy(&dongle_addrs[dongle_count], peer);
-        LOG_INF("Registered dongle at slot %u: %s", dongle_count, addr_str);
+        if (DONGLE_MAX_PROFILES > 1) {
+            LOG_INF("Registered dongle at slot %u: %s", dongle_count, addr_str);
+        }
         dongle_count++;
         save_dongle_config();
     } else {
@@ -276,6 +325,11 @@ static int zmk_peripheral_ble_complete_startup(void) {
 #else
     bt_conn_cb_register(&conn_callbacks);
     bt_conn_auth_info_cb_register(&zmk_peripheral_ble_auth_info_cb);
+
+    /* Preserve previous startup behavior for existing paired devices. */
+    if (dongle_count == 0) {
+        refresh_dongle_slots_from_bonds();
+    }
 
     low_duty_advertising = false;
     k_work_submit(&advertising_work);
