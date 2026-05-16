@@ -62,7 +62,7 @@ static struct bt_conn *current_conn = NULL;
 /* Ordered list of bonded dongle (central) addresses.
  * Slot 0 = first paired dongle (e.g., home), slot 1 = second (e.g., work). */
 static bt_addr_le_t dongle_addrs[DONGLE_MAX_PROFILES];
-static uint8_t dongle_count = 0;     /* how many slots have a stored address */
+static uint8_t dongle_count = 0; /* how many slots have a stored address */
 static uint8_t active_dongle_slot = 0;
 
 struct bond_scan_ctx {
@@ -109,12 +109,9 @@ static void refresh_dongle_slots_from_bonds(void) {
 #if IS_ENABLED(CONFIG_SETTINGS)
 
 static void save_dongle_config(void) {
-    settings_save_one("ble_peripheral/dslot", &active_dongle_slot,
-                      sizeof(active_dongle_slot));
-    settings_save_one("ble_peripheral/dcount", &dongle_count,
-                      sizeof(dongle_count));
-    settings_save_one("ble_peripheral/daddrs", dongle_addrs,
-                      sizeof(dongle_addrs));
+    settings_save_one("ble_peripheral/dslot", &active_dongle_slot, sizeof(active_dongle_slot));
+    settings_save_one("ble_peripheral/dcount", &dongle_count, sizeof(dongle_count));
+    settings_save_one("ble_peripheral/daddrs", dongle_addrs, sizeof(dongle_addrs));
 }
 
 #else
@@ -143,13 +140,11 @@ static int start_advertising(bool low_duty) {
         if (DONGLE_MAX_PROFILES > 1) {
             char addr_str[BT_ADDR_LE_STR_LEN];
             bt_addr_le_to_str(target, addr_str, sizeof(addr_str));
-            LOG_DBG("Directed advertising to dongle slot %u: %s",
-                    active_dongle_slot, addr_str);
+            LOG_DBG("Directed advertising to dongle slot %u: %s", active_dongle_slot, addr_str);
         }
 
         struct bt_le_adv_param adv_param =
-            low_duty ? *BT_LE_ADV_CONN_DIR_LOW_DUTY(target)
-                     : *BT_LE_ADV_CONN_DIR(target);
+            low_duty ? *BT_LE_ADV_CONN_DIR_LOW_DUTY(target) : *BT_LE_ADV_CONN_DIR(target);
         return bt_le_adv_start(&adv_param, NULL, 0, NULL, 0);
     }
 
@@ -158,8 +153,7 @@ static int start_advertising(bool low_duty) {
     if (DONGLE_MAX_PROFILES > 1) {
         LOG_DBG("Undirected advertising (slot %u not yet paired)", active_dongle_slot);
     }
-    return bt_le_adv_start(BT_LE_ADV_CONN, zmk_ble_ad, ARRAY_SIZE(zmk_ble_ad),
-                           NULL, 0);
+    return bt_le_adv_start(BT_LE_ADV_CONN, zmk_ble_ad, ARRAY_SIZE(zmk_ble_ad), NULL, 0);
 }
 
 static void advertising_cb(struct k_work *work) {
@@ -211,8 +205,7 @@ static void disconnected(struct bt_conn *conn, uint8_t reason) {
     k_work_submit(&advertising_work);
 }
 
-static void security_changed(struct bt_conn *conn, bt_security_t level,
-                             enum bt_security_err err) {
+static void security_changed(struct bt_conn *conn, bt_security_t level, enum bt_security_err err) {
     char addr[BT_ADDR_LE_STR_LEN];
     bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
 
@@ -223,8 +216,8 @@ static void security_changed(struct bt_conn *conn, bt_security_t level,
     }
 }
 
-static void le_param_updated(struct bt_conn *conn, uint16_t interval,
-                             uint16_t latency, uint16_t timeout) {
+static void le_param_updated(struct bt_conn *conn, uint16_t interval, uint16_t latency,
+                             uint16_t timeout) {
     char addr[BT_ADDR_LE_STR_LEN];
     bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
     LOG_DBG("%s: interval %d latency %d timeout %d", addr, interval, latency, timeout);
@@ -268,8 +261,7 @@ static void auth_pairing_complete(struct bt_conn *conn, bool bonded) {
         dongle_count++;
         save_dongle_config();
     } else {
-        LOG_WRN("All %d dongle slots are full; new dongle not registered",
-                DONGLE_MAX_PROFILES);
+        LOG_WRN("All %d dongle slots are full; new dongle not registered", DONGLE_MAX_PROFILES);
     }
 }
 
@@ -344,8 +336,8 @@ static int zmk_peripheral_ble_complete_startup(void) {
 
 #if IS_ENABLED(CONFIG_SETTINGS)
 
-static int peripheral_ble_handle_set(const char *name, size_t len,
-                                     settings_read_cb read_cb, void *cb_arg) {
+static int peripheral_ble_handle_set(const char *name, size_t len, settings_read_cb read_cb,
+                                     void *cb_arg) {
     if (strcmp(name, "dslot") == 0) {
         if (len != sizeof(active_dongle_slot)) {
             return -EINVAL;
