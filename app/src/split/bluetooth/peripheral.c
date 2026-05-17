@@ -46,6 +46,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
  * ----------------------------------------------------------------------- */
 
 #define DONGLE_MAX_PROFILES CONFIG_ZMK_SPLIT_PERIPHERAL_DONGLE_PROFILES
+#define DONGLE_DIRECTED_TIMEOUTS_BEFORE_UNDIRECTED 2
 
 static const struct bt_data zmk_ble_ad[] = {
     BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
@@ -64,6 +65,10 @@ static struct bt_conn *current_conn = NULL;
 static bt_addr_le_t dongle_addrs[DONGLE_MAX_PROFILES];
 static uint8_t dongle_count = 0; /* how many slots have a stored address */
 static uint8_t active_dongle_slot = 0;
+static uint8_t directed_timeout_count = 0;
+static bool force_undirected_once = false;
+
+static void save_dongle_config(void);
 
 struct bond_scan_ctx {
     bt_addr_le_t *addrs;
@@ -102,6 +107,17 @@ static void refresh_dongle_slots_from_bonds(void) {
     }
 }
 
+static void rotate_active_dongle_slot(void) {
+    if (DONGLE_MAX_PROFILES <= 1 || dongle_count <= 1) {
+        return;
+    }
+
+    active_dongle_slot = (active_dongle_slot + 1) % dongle_count;
+    save_dongle_config();
+
+    LOG_DBG("Rotated active dongle slot to %u", active_dongle_slot);
+}
+
 /* -----------------------------------------------------------------------
  * Settings helpers
  * ----------------------------------------------------------------------- */
@@ -129,6 +145,13 @@ static int start_advertising(bool low_duty) {
      * stored slot table yet, seed from the BLE bond list. */
     if (dongle_count == 0) {
         refresh_dongle_slots_from_bonds();
+    }
+
+    if (force_undirected_once) {
+        force_undirected_once = false;
+        is_bonded = (dongle_count > 0);
+        LOG_DBG("Directed timeout fallback: undirected advertising");
+        return bt_le_adv_start(BT_LE_ADV_CONN, zmk_ble_ad, ARRAY_SIZE(zmk_ble_ad), NULL, 0);
     }
 
     /* Use the stored address for the active slot if available. */
@@ -173,6 +196,8 @@ static void connected(struct bt_conn *conn, uint8_t err) {
     if (err == 0) {
         is_connected = true;
         current_conn = bt_conn_ref(conn);
+        directed_timeout_count = 0;
+        force_undirected_once = false;
     } else {
         is_connected = false;
     }
@@ -181,6 +206,22 @@ static void connected(struct bt_conn *conn, uint8_t err) {
         (struct zmk_split_peripheral_status_changed){.connected = is_connected});
 
     if (err == BT_HCI_ERR_ADV_TIMEOUT) {
+        /* If this dongle is unavailable, move to the next bonded slot and
+         * retry advertising. This enables seamless switching between multiple
+         * dongles by simply powering on the desired one. */
+        rotate_active_dongle_slot();
+
+        /* When only one slot is currently known, periodically fall back to
+         * undirected advertising so a newly powered second dongle can be
+         * discovered and paired without any key action. */
+        if (dongle_count <= 1) {
+            directed_timeout_count++;
+            if (directed_timeout_count >= DONGLE_DIRECTED_TIMEOUTS_BEFORE_UNDIRECTED) {
+                directed_timeout_count = 0;
+                force_undirected_once = true;
+            }
+        }
+
         low_duty_advertising = true;
         k_work_submit(&advertising_work);
     }
@@ -255,10 +296,13 @@ static void auth_pairing_complete(struct bt_conn *conn, bool bonded) {
         char addr_str[BT_ADDR_LE_STR_LEN];
         bt_addr_le_to_str(peer, addr_str, sizeof(addr_str));
         bt_addr_le_copy(&dongle_addrs[dongle_count], peer);
+        active_dongle_slot = dongle_count;
         if (DONGLE_MAX_PROFILES > 1) {
             LOG_INF("Registered dongle at slot %u: %s", dongle_count, addr_str);
         }
         dongle_count++;
+        directed_timeout_count = 0;
+        force_undirected_once = false;
         save_dongle_config();
     } else {
         LOG_WRN("All %d dongle slots are full; new dongle not registered", DONGLE_MAX_PROFILES);
