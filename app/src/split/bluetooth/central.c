@@ -14,10 +14,13 @@
 #include <zephyr/bluetooth/hci.h>
 #include <zephyr/settings/settings.h>
 #include <zephyr/sys/byteorder.h>
+#include <zephyr/sys/atomic.h>
 
 #include <zephyr/logging/log.h>
 
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
+
+#include <host/hci_core.h>
 
 #include <zmk/stdlib.h>
 #include <zmk/ble.h>
@@ -35,6 +38,26 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include <zmk/physical_layouts.h>
 
 static int start_scanning(void);
+
+static const bt_addr_le_t preset_dongle_identity = {
+    .type = BT_ADDR_LE_RANDOM,
+    .a = {{0x0A, 0x89, 0x67, 0x45, 0x23, 0xC1}},
+};
+
+static int zmk_split_bt_central_preset_identity(void) {
+    if (bt_dev.id_count > 0) {
+        return 0;
+    }
+
+    bt_addr_le_copy(&bt_dev.id_addr[BT_ID_DEFAULT], &preset_dongle_identity);
+    bt_addr_le_copy(&bt_dev.random_addr, &preset_dongle_identity);
+    bt_dev.id_count = 1;
+    atomic_set_bit(bt_dev.flags, BT_DEV_PRESET_ID);
+
+    return 0;
+}
+
+SYS_INIT(zmk_split_bt_central_preset_identity, PRE_KERNEL_1, 0);
 
 #define POSITION_STATE_DATA_LEN 16
 
