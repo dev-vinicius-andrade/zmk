@@ -188,6 +188,21 @@ static void advertising_cb(struct k_work *work) {
 
 K_WORK_DEFINE(advertising_work, advertising_cb);
 
+/* Watchdog that kicks a fresh advertising cycle if we are still disconnected
+ * a few seconds after a drop. Catches cases where the initial restart is
+ * lost due to BLE stack congestion (e.g. burst events during gaming). */
+static void reconnect_watchdog_cb(struct k_work *work);
+K_WORK_DELAYABLE_DEFINE(reconnect_watchdog_work, reconnect_watchdog_cb);
+
+static void reconnect_watchdog_cb(struct k_work *work) {
+    if (!is_connected) {
+        LOG_WRN("Reconnect watchdog: still disconnected, restarting advertising");
+        bt_le_adv_stop();
+        low_duty_advertising = false;
+        k_work_submit(&advertising_work);
+    }
+}
+
 /* -----------------------------------------------------------------------
  * Connection callbacks
  * ----------------------------------------------------------------------- */
@@ -198,6 +213,7 @@ static void connected(struct bt_conn *conn, uint8_t err) {
         current_conn = bt_conn_ref(conn);
         directed_timeout_count = 0;
         force_undirected_once = false;
+        k_work_cancel_delayable(&reconnect_watchdog_work);
     } else {
         is_connected = false;
     }
@@ -244,6 +260,10 @@ static void disconnected(struct bt_conn *conn, uint8_t reason) {
 
     low_duty_advertising = false;
     k_work_submit(&advertising_work);
+    /* Schedule a watchdog to force a fresh advertising restart if we are
+     * still disconnected after 5 s (guards against stuck advertising state
+     * caused by BLE stack congestion during high-event periods). */
+    k_work_schedule(&reconnect_watchdog_work, K_SECONDS(5));
 }
 
 static void security_changed(struct bt_conn *conn, bt_security_t level, enum bt_security_err err) {
